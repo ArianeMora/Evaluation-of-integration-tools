@@ -1,5 +1,7 @@
 ## Creating colorectal cancer dataset
 rm(list=ls())
+packages <- c("caret")
+install.packages(setdiff(packages, rownames(installed.packages())))
 library(caret)
 ### reading thresholded copy number downloaded from UCSC Xena browser 
 # https://xenabrowser.net/datapages/?cohort=TCGA%20Colon%20Cancer%20(COAD)&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443
@@ -7,19 +9,21 @@ library(caret)
 # https://tcga-xena-hub.s3.us-east-1.amazonaws.com/latest/TCGA.COAD.sampleMap%2FSNP6_nocnv_genomicSegment.gz
 # https://xenabrowser.net/datapages/?dataset=TCGA.COAD.sampleMap%2FSNP6_nocnv_genomicSegment&host=https%3A%2F%2Ftcga.xenahubs.net&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443
 
-cn <- read.table(gzfile("COAD_Gistic2_CopyNumber_Gistic2_all_thresholded.by_genes.gz"), header = T, sep = "\t")
+####### ArianeMora: downloaded on 26/06/2021 using below link
+# https://xenabrowser.net/datapages/?dataset=TCGA.COAD.sampleMap%2FGistic2_CopyNumber_Gistic2_all_thresholded.by_genes&host=https%3A%2F%2Ftcga.xenahubs.net&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443
+cn <- read.table(gzfile("TCGA.COAD.sampleMap_Gistic2_CopyNumber_Gistic2_all_thresholded.by_genes.gz"), header = T, sep = "\t")
 cn[1:5,1:5]
 rownames(cn) <- cn[,1]
 cn <- cn[,-1]
 
 ### reading gene expression file downloaded from UCSC Xena browser
-ge.exp <- read.table(gzfile("COAD_HiSeqV2.gz"), header = T, sep = "\t")
+ge.exp <- read.table(gzfile("TCGA.COAD.sampleMap_HiSeqV2.gz"), header = T, sep = "\t")
 ge.exp[1:5,1:5]
 rownames(ge.exp) <- ge.exp[,1]
 ge.exp <- ge.exp[,-1]
 
 ### reading methylation data downloaded from firebrowse
-me.exp <- read.table("COAD.meth.by_mean.data.txt", header = T, sep = "\t")
+me.exp <- read.table("TCGA.COAD.sampleMap_HumanMethylation450.gz", header = T, sep = "\t")
 me.exp[1:5,1:5]
 me.exp <- me.exp[-1,]
 rownames(me.exp) <- me.exp[,1]

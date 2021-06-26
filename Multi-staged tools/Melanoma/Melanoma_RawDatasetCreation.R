@@ -1,3 +1,14 @@
+# -------------------------------------------------------------------------------------------
+#            Dataset download for Melanoma (25/06/2021) Ariane Mora
+#     
+#      Main site:  https://xenabrowser.net/datapages/?cohort=GDC%20TCGA%20Melanoma%20(SKCM)&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443
+#
+#     CNV: TCGA-SKCM.gistic.tsv: copy number (gene-level) - GISTIC - focal score by gene: https://xenabrowser.net/datapages/?dataset=TCGA-SKCM.gistic.tsv&host=https%3A%2F%2Fgdc.xenahubs.net&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443
+#     DNA Metylation: TCGA-SKCM.methylation450.tsv: DNA methylation - Illumina Human Methylation 450: https://xenabrowser.net/datapages/?dataset=TCGA-SKCM.methylation450.tsv&host=https%3A%2F%2Fgdc.xenahubs.net&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443
+#     RNAseq counts: TCGA-SKCM.htseq_counts.tsv: gene expression RNAseq - HTSeq - Counts: https://xenabrowser.net/datapages/?dataset=TCGA-SKCM.htseq_counts.tsv&host=https%3A%2F%2Fgdc.xenahubs.net&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443
+# 
+# -------------------------------------------------------------------------------------------
+
 ## Creating melanoma cancer dataset
 rm(list=ls())
 library(caret)
@@ -9,7 +20,7 @@ rownames(cn) <- cn[,1]
 cn <- cn[,-1]
 
 ### reading gene expression file
-ge.exp <- read.table(gzfile("/home/anita/Benchmarking/two_omics/MelanomaCompleteDataAnalysis/MelanomaData/SKCM_HiSeqV2.gz"), header = T, sep = "\t")
+ge.exp <- read.table(gzfile("TCGA-SKCM.htseq_counts.tsv.gz"), header = T, sep = "\t")
 ge.exp[1:5,1:5]
 rownames(ge.exp) <- ge.exp[,1]
 ge.exp <- ge.exp[,-1]

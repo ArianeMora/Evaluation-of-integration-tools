@@ -1,0 +1,315 @@
+---
+title: "Dataset generation notebook for comparison study"
+output: html_notebook
+---
+
+# Install and setup
+
+
+filename = '../data/S050_CCRCC_Clark_Cell2019_SIRCLE/cpg_DE_stage1_sircle.csv'
+annotation_file = '../data/S050_CCRCC_Clark_Cell2019/TCGA/tcga_hsapiens_gene_ensembl-GRCh38.p13.csv'
+f = Csv(filename, 'chr', 'start', 'start', 'logFC', ["AveExpr","t","P.Value","adj.P.Val","B","cpg_id"],
+           gene_start=4, gene_end=5, gene_chr=3,
+           gene_direction=6, gene_name=2)
+# Add the gene annot
+f.set_annotation_from_file(annotation_file)
+# Now we can run the assign values
+f.assign_locations_to_genes()
+f.save_loc_to_csv(f'../data/S050_CCRCC_Clark_Cell2019_SIRCLE/cpg_DE_stage1_annot_sircle.csv')
+```{r}
+packages <- c("tidyverse", "reticulate", "dplyr", "caret")
+install.packages(setdiff(packages, rownames(installed.packages())))
+
+library(caret)
+library(tidyverse)
+library(dplyr)
+library(reticulate)
+  
+condaEnvName <- "ml"
+envName <- NULL
+envPath <- NULL
+setupEnv <- F
+
+## ------------ Setup the environment ----------- ##
+if (! is.null(condaEnvName)) {
+    use_condaenv(condaEnvName, required = TRUE)
+    setupEnv = T
+}
+if (! is.null(envName)) {
+    use_virtualenv(envName, required = TRUE)
+    setupEnv = T
+}
+if (! is.null(envPath)) {
+    use_python(envPath, required = TRUE)
+    setupEnv = T
+}
+if (! setupEnv) {
+    print("WARNING: NEXT TIME USE envNAME --> we are creating you a new virtual environment called sircle. THIS TAKES TIME, so next time pass envName=sircle to skip this step. ")
+    print("WARNING: YOUR SYSTEM NEED PYTHON > 3.6. If it doesn't nothing will work, please update to python 3.6 or consider installing conda!")
+    virtualenv_create(
+      envname = "ml",
+      python = NULL,
+      packages = "scie2g",
+      system_site_packages = getOption("reticulate.virtualenv.system_site_packages",
+                                       default = FALSE)
+    )
+    use_python(envPath, required = TRUE)
+    setupEnv = T
+}
+
+```
+
+## Annotate Methylation CpGs to genes
+```{r}
+scie2g <<- import("scie2g")    # Make global
+
+# Drop rows with a * in the chr column
+mapping_df <- read.csv('illuminaMethyl450_hg38_GDC.tsv', sep="\t")
+mapping_df <- mapping_df[mapping_df$chrom != "*", ]
+write.csv(mapping_df, 'normal_chrs_illuminaMethyl450_hg38_GDC.csv')
+## Assign methylation CpGs to gene identifiers (using the mapping provided)
+# Here we assign CpGs if they fall within 2500 of the TSS of the gene.
+gene_mapper <- scie2g$Csv('normal_chrs_illuminaMethyl450_hg38_GDC.csv', 'chrom', 
+                     'chromStart', 'chromEnd', 'chromStart', c("id","gene"),
+                     buffer_after_tss=as.integer(0),
+                     buffer_before_tss=as.integer(2500),
+                     buffer_gene_overlap=as.integer(0),
+                     gene_start=as.integer(4), gene_end=as.integer(5), gene_chr=as.integer(3),
+                     gene_direction=as.integer(6), gene_name=as.integer(2))
+gene_mapper$set_annotation_from_file("tcga_hsapiens_gene_ensembl-GRCh38.p13.csv")
+# Now we can run the assign values
+gene_mapper$assign_locations_to_genes()
+# Save the mapping to CSV file.
+gene_mapper$save_loc_to_csv('illuminaMethyl450_hg38_GDC_2500_promoter_mapping.csv')
+```
+
+## Function for generating the datasets
+```{r}
+
+make_datasets <- function(data_name, data_folder) {
+    message("Making datasets for CNV, RNAseq, and DNA methylation of", data_name, "in folder:", data_folder)
+    ### reading copy number values and seperating them into amplification and deletion calls
+    cn <- read.table(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".gistic.tsv.gz"))), header = T, sep = "\t")
+    cn[1:5,1:5]
+    rownames(cn) <- cn[,1]
+    cn <- cn[,-1]
+    
+    ### reading gene expression file
+    ge.exp <- read.table(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".htseq_counts.tsv.gz"))), header = T, sep = "\t")
+    ge.exp[1:5,1:5]
+    rownames(ge.exp) <- ge.exp[,1]
+    # Set Ensembl ID to be the main ID
+    ge.exp <- ge.exp[,2:length(colnames(ge.exp))]
+    # Remove the normalisation by log2 + 1
+    ge.exp <- (2^ge.exp) - 1 
+    
+    ### reading methylation data
+    me.exp <- read.table(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".methylation450.tsv.gz"))), header = T, sep = "\t")
+    me.exp[1:5,1:5]
+    me.exp <- me.exp[-1,]
+    rownames(me.exp) <- me.exp[,1]
+    me.exp <- me.exp[,-1]
+    me.exp <- na.omit(me.exp)
+    ## Annotate the methylation CpGs to gene names (using ensembl gene ID)
+    mapping <- read.csv('illuminaMethyl450_hg38_GDC_2500_promoter_mapping.csv')
+    rownames(mapping) <- mapping$id # Set the CpG id to be the row names
+    annotated_cpgs <- intersect(rownames(me.exp), rownames(mapping))
+    me.exp <- me.exp[annotated_cpgs,]
+    mapping <- mapping[annotated_cpgs,]
+    rownames(me.exp) <- mapping$ensembl_gene_id
+    
+    # Now we just want to get the intersect of the rownames, first we merge this 
+    ## identifying common genes and samples in all the datasets
+    a <- intersect(colnames(cn), colnames(ge.exp))
+    a1 <- intersect(colnames(me.exp), a)
+    b <- intersect(rownames(cn), rownames(ge.exp))
+    b1 <- intersect(rownames(me.exp), b)
+    
+    ge.exp2 <- ge.exp[b1,a1]
+    cn2 <- cn[b1,a1]
+    me.exp2 <- me.exp[b1,a1]
+    
+    cn2[1:5,1:5]
+    ge.exp2[1:5,1:5]
+    me.exp2[1:5,1:5]
+    
+    ## removing genes with zero and near zero variance in gene expression dataset and creating final dataset
+    # ge <-  Gene expression dataframe
+    # cnv <- copy number variation dataframe
+    # me <- methylation intensity dataframe
+    tmp <- t(log2(ge.exp2 + 1)) ## Remove ones with low variance we want to convert back to log2 transformed
+    rmcols <- nearZeroVar(tmp)
+    data_merged.ge <- t(tmp[, -rmcols])
+    data_merged.ge <- data.frame(meso.ge)
+    
+    data_merged.cnv <- cn2[rownames(meso.ge),]
+    data_merged.me <- me.exp2[rownames(meso.ge),]
+    
+    data_merged.cnv[1:5,1:5]
+    data_merged.ge[1:5,1:5]
+    data_merged.me[1:5,1:5]
+    
+    # changing me columns as numeric
+    data_merged.me <- apply(data_merged.me, 2, as.numeric)
+    rownames(data_merged.me) <- row.names(data_merged.ge)
+    
+    # final check
+    all(rownames(data_merged.ge) == rownames(data_merged.cnv))
+    all(rownames(data_merged.cnv) == rownames(data_merged.me))
+    
+    all(colnames(data_merged.ge) == colnames(data_merged.cnv))
+    all(colnames(data_merged.cnv) == colnames(data_merged.me))
+    
+    message("Saving merged datasets to:", file.path(data_folder, paste0(data_name, "_RawDataset.Rdata")))
+    save(file = file.path(data_folder, paste0(data_name, "_RawDataset.Rdata")), data_merged.ge, data_merged.cnv, data_merged.me)
+}
+
+data_name <- "SKCM"
+data_folder <- '.'
+
+message("Making datasets for CNV, RNAseq, and DNA methylation of ", data_name, " in folder:", data_folder)
+### reading copy number values and seperating them into amplification and deletion calls
+cn <- read.table(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".gistic.tsv.gz"))), header = T, sep = "\t")
+cn[1:5,1:5]
+rownames(cn) <- cn[,1]
+cn <- cn[,-1]
+
+### reading gene expression file
+ge.exp <- read.table(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".htseq_counts.tsv.gz"))), header = T, sep = "\t")
+ge.exp[1:5,1:5]
+rownames(ge.exp) <- ge.exp[,1]
+# Set Ensembl ID to be the main ID
+ge.exp <- ge.exp[,2:length(colnames(ge.exp))]
+# Remove the normalisation by log2 + 1
+ge.exp <- (2^ge.exp) - 1 
+
+### reading methylation data
+me.exp <- read.table(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".methylation450.tsv.gz"))), header = T, sep = "\t")
+me.exp[1:5,1:5]
+me.exp <- me.exp[-1,]
+rownames(me.exp) <- me.exp[,1]
+me.exp <- me.exp[,-1]
+me.exp <- na.omit(me.exp)
+## Annotate the methylation CpGs to gene names (using ensembl gene ID)
+mapping <- read.csv('illuminaMethyl450_hg38_GDC_2500_promoter_mapping.csv')
+rownames(mapping) <- mapping$id # Set the CpG id to be the row names
+annotated_cpgs <- intersect(rownames(me.exp), rownames(mapping))
+me.exp <- me.exp[annotated_cpgs,]
+mapping <- mapping[annotated_cpgs,]
+rownames(me.exp) <- mapping$ensembl_gene_id
+
+# Now we just want to get the intersect of the rownames, first we merge this 
+## identifying common genes and samples in all the datasets
+a <- intersect(colnames(cn), colnames(ge.exp))
+a1 <- intersect(colnames(me.exp), a)
+b <- intersect(rownames(cn), rownames(ge.exp))
+b1 <- intersect(rownames(me.exp), b)
+
+ge.exp2 <- ge.exp[b1,a1]
+cn2 <- cn[b1,a1]
+me.exp2 <- me.exp[b1,a1]
+
+cn2[1:5,1:5]
+ge.exp2[1:5,1:5]
+me.exp2[1:5,1:5]
+
+## removing genes with zero and near zero variance in gene expression dataset and creating final dataset
+# ge <-  Gene expression dataframe
+# cnv <- copy number variation dataframe
+# me <- methylation intensity dataframe
+tmp <- t(log2(ge.exp2 + 1)) ## Remove ones with low variance we want to convert back to log2 transformed
+rmcols <- nearZeroVar(tmp)
+data_merged.ge <- t(tmp[, -rmcols])
+data_merged.ge <- data.frame(meso.ge)
+
+data_merged.cnv <- cn2[rownames(meso.ge),]
+data_merged.me <- me.exp2[rownames(meso.ge),]
+
+data_merged.cnv[1:5,1:5]
+data_merged.ge[1:5,1:5]
+data_merged.me[1:5,1:5]
+
+# changing me columns as numeric
+data_merged.me <- apply(data_merged.me, 2, as.numeric)
+rownames(data_merged.me) <- row.names(data_merged.ge)
+
+# final check
+all(rownames(data_merged.ge) == rownames(data_merged.cnv))
+all(rownames(data_merged.cnv) == rownames(data_merged.me))
+
+all(colnames(data_merged.ge) == colnames(data_merged.cnv))
+all(colnames(data_merged.cnv) == colnames(data_merged.me))
+
+message("Saving merged datasets to:", file.path(data_folder, paste0(data_name, "_RawDataset.Rdata")))
+save(file = file.path(data_folder, paste0(data_name, "_RawDataset.Rdata")), data_merged.ge, data_merged.cnv, data_merged.me)
+```
+## Dataset generation
+
+Datasets were downloaded on 25/06/2021 by Ariane Mora
+
+### Dataset download for Melanoma 
+     
+#### Main site:  https://xenabrowser.net/datapages/?cohort=GDC%20TCGA%20Melanoma%20(SKCM)&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443  
+1) CNV: TCGA-SKCM.gistic.tsv
+    1.a) copy number (gene-level) - GISTIC - focal score by gene  
+    1.b) https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-SKCM.gistic.tsv.gz
+2) DNA Methylation: TCGA-SKCM.methylation450.tsv: 
+    2.a) DNA methylation - Illumina Human Methylation 450          
+    2.b) https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-SKCM.methylation450.tsv.gz
+3) RNAseq counts: TCGA-SKCM.htseq_counts.tsv
+    3.a) gene expression RNAseq - HTSeq - Counts unit: log2(count+1)
+    3.b) https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-SKCM.htseq_counts.tsv.gz
+
+
+```{r}
+make_datasets("SKCM", "SKCM")
+```
+
+### Dataset download for Mesothelioma
+     
+#### Main site: https://xenabrowser.net/datapages/?cohort=GDC%20TCGA%20Mesothelioma%20(MESO)&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443
+1) CNV: TCGA-MESO.gistic.tsv
+    1.a) copy number (gene-level) - GISTIC - focal score by gene  
+    1.b) https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-MESO.gistic.tsv.gz
+2) DNA Metylation: TCGA-MESO.methylation450.tsv  
+    2.a) DNA methylation - Illumina Human Methylation 450  
+    2.b) https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-MESO.methylation450.tsv.gz
+3) RNAseq counts: TCGA-MESO.htseq_counts.tsv
+    3.a) gene expression RNAseq - HTSeq - Counts log2(count+1)
+    3.b) https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-MESO.htseq_counts.tsv.gz
+
+```{r}
+make_datasets("MESO", "MESO")
+```
+
+### Dataset download for Colon
+     
+#### Main site: https://xenabrowser.net/datapages/?cohort=GDC%20TCGA%20Colon%20Cancer%20(COAD)
+1) CNV: TCGA-COAD.gistic.tsv
+    1.a) copy number (gene-level) - GISTIC - focal score by gene unit Gistic2 copy number  
+    1.b) https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-COAD.gistic.tsv.gz
+2) DNA Metylation: TCGA-MESO.methylation450.tsv  
+    2.a) DNA methylation - Illumina Human Methylation 450  unit: beta value
+    2.b) https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-COAD.methylation450.tsv.gz
+3) RNAseq counts: TCGA-COAD.htseq_counts.tsv
+    3.a) gene expression RNAseq - HTSeq - Counts unit: log2(count+1)
+    3.b) https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-COAD.methylation450.tsv.gz
+    
+```{r}
+make_datasets("COAD", "COAD")
+```
+
+#### Main site: https://xenabrowser.net/datapages/?cohort=GDC%20TCGA%20Pancreatic%20Cancer%20(PAAD)&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443
+1) CNV: TCGA-PAAD.gistic.tsv
+    1.a) copy number (gene-level) - GISTIC - focal score by gene unit Gistic2 copy number  
+    1.b) https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-PAAD.gistic.tsv.gz
+2) DNA Metylation: TCGA-PAAD.methylation450.tsv
+    2.a) DNA methylation - Illumina Human Methylation 450  unit: beta value
+    2.b) https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-PAAD.methylation450.tsv.gz
+3) RNAseq counts: TCGA-PAAD.htseq_counts.tsv
+    3.a) gene expression RNAseq - HTSeq - Counts unit: log2(count+1)
+    3.b) https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-PAAD.htseq_counts.tsv.gz
+    
+```{r}
+make_datasets("PAAD", "PAAD")
+```
