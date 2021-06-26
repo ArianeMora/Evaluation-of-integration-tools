@@ -1,6 +1,7 @@
 # BCC works only when further filtering of the data is done.
 # 
 ## ------------------------------------------------------------------------
+# Doesn't work for R = 4.0.3
 library(bayesCC)
 gbm.dat.me = readRDS("GBM_Methylation_Top25Filtered.rd")
 gbm.dat.rna = readRDS("GBM_RNA_Top25Filtered.rd")

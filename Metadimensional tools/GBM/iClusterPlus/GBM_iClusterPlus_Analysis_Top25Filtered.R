@@ -6,11 +6,10 @@ library(lattice)
 library(tictoc)
 
 # Loading data
-#setwd("home/n9870130/Benchmark_Integrative_Tools/GBM/Top25FilteredData")
-gbm.dat.me = readRDS("GBM_Methylation_Top25Filtered.rd")
-gbm.dat.rna = readRDS("GBM_RNA_Top25Filtered.rd")
-gbm.dat.protein = readRDS("GBM_Protein_Top25Filtered.rd")
-data.labels = readRDS("GBM_DataLabels.rd")
+gbm.dat.me = readRDS("Data/GBM_Methylation_Top25Filtered.rd")
+gbm.dat.rna = readRDS("Data/GBM_RNA_Top25Filtered.rd")
+gbm.dat.protein = readRDS("Data/GBM_Protein_Top25Filtered.rd")
+data.labels = readRDS("Data/GBM_DataLabels.rd")
 
 # formatting data
 mrna2 = as.matrix(gbm.dat.rna)
@@ -60,14 +59,12 @@ clusters_label <- getClusters(output)
 clusters_label <- data.frame(clusters_label)
 colnames(clusters_label)[1] <- "Predicted"
 
-
-#setwd("/home/n9870130/Benchmark_Integrative_Tools/GBM/Top25FilteredData")
 dataname = "GBM"
 save(best.fit, sigfeatures, file = paste(dataname,".best.cv.fit.k", k,".RData", sep = ""))
-save.image(file = "GBM_iCPAnalysis_Top25Filtered.RData")
+save.image(file = "iCP/GBM_iCPAnalysis_Top25Filtered.RData")
 
 ## Run the below after loading GBM_iCPAnalysis.RData
-load("/home/anita/Benchmarking/GBM/iCP/GBM_iCPAnalysis_Top25Filtered.RData")
+load("iCP/GBM_iCPAnalysis_Top25Filtered.RData")
 
 clustersGBM = clusters_label
 clustersGBM$Truth <- data.labels$Label
@@ -111,6 +108,5 @@ Fg4[is.nan(Fg4)] <- 0
 
 Accuracy <-  sum(diag(confusion.mat))/60
 Avg.F1 <- (Fg1+Fg2+Fg3+Fg4)/4
-setwd("/home/anita/Benchmarking/GBM/iCP/")
-save.image(file = "GBM_iCPAnalysis_withPerformanceScore.RData")
+save.image(file = "iCP/GBM_iCPAnalysis_withPerformanceScore.RData")
 

@@ -2,6 +2,11 @@
 rm(list=ls())
 library(caret)
 ### reading thresholded copy number downloaded from UCSC Xena browser 
+# https://xenabrowser.net/datapages/?cohort=TCGA%20Colon%20Cancer%20(COAD)&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443
+
+# https://tcga-xena-hub.s3.us-east-1.amazonaws.com/latest/TCGA.COAD.sampleMap%2FSNP6_nocnv_genomicSegment.gz
+# https://xenabrowser.net/datapages/?dataset=TCGA.COAD.sampleMap%2FSNP6_nocnv_genomicSegment&host=https%3A%2F%2Ftcga.xenahubs.net&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443
+
 cn <- read.table(gzfile("COAD_Gistic2_CopyNumber_Gistic2_all_thresholded.by_genes.gz"), header = T, sep = "\t")
 cn[1:5,1:5]
 rownames(cn) <- cn[,1]
