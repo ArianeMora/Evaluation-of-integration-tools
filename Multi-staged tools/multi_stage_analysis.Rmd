@@ -1,0 +1,208 @@
+---
+title: "Multi-stage tool analysis"
+output: html_notebook
+---
+
+# Install and setup
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+MethylMix_ModelGeneExpression_FDR <- function (METcancer, GEcancer, CovariateData = NULL) 
+{
+  OverlapSamples = intersect(colnames(METcancer), colnames(GEcancer))
+  cat("Found", length(OverlapSamples), "samples with both methylation and expression data.\n")
+  GEcancer = GEcancer[, OverlapSamples, drop = FALSE]
+  METcancer = METcancer[, OverlapSamples, drop = FALSE]
+  if (!is.null(CovariateData)) 
+    CovariateData = CovariateData[OverlapSamples, , drop = FALSE]
+  Rsquares = matrix(0, nrow = length(rownames(METcancer)), 
+                    ncol = 1)
+  Genes = rownames(METcancer)
+  PvalueThreshold = 0.001
+  RsquareThreshold = 0.1
+  cat("Correlating methylation data with gene expression...\n")
+  i <- NULL
+  Rsquares = foreach::foreach(i = 1:length(rownames(METcancer)), 
+                              .combine = "c") %dopar% {
+                                Rsq = c(0,0)
+                                tmpGene = unlist(strsplit(Genes[i], "---"))[1]
+                                pos = which(rownames(GEcancer) == tmpGene)
+                                if (length(pos) > 0) {
+                                  if (!is.null(CovariateData)) {
+                                    res = lm(GEcancer[pos, ] ~ METcancer[Genes[i], ] + factor(CovariateData))
+                                    res.summary = summary(res)
+                                    an = anova(res)
+                                    if (res$coefficients[2] < 0 & res.summary$coefficients[2,4] < PvalueThreshold) {
+                                      Rsq = res.summary$r.squared
+                                    }
+                                  }
+                                  else {
+                                    res = lm(GEcancer[pos, ] ~ METcancer[Genes[i], ])
+                                    res.summary = summary(res)
+                                    if (res$coefficients[2] < 0 & res.summary$coefficients[2,4] < PvalueThreshold) {
+                                      Rsq = c(res.summary$r.squared, res.summary$coefficients[2,4])
+                                    }
+                                  }
+                                }
+                                Rsq
+                              }
+  Rsquares = data.frame(matrix(Rsquares, ncol = 2, byrow = T))
+  Rsquares[,3] = p.adjust(Rsquares[,2], method = "fdr", n = length(Rsquares[,2])) # estimating fdr
+  FunctionalGenes = Genes[Rsquares[,1] > RsquareThreshold]
+  cat("\nFound", length(FunctionalGenes), "transcriptionally predictive genes.\n")
+  
+  Rsquares = Rsquares[Rsquares[,1] > RsquareThreshold,]
+  FunctionalGenes_withfdr = cbind(FunctionalGenes, Rsquares[,3])
+  return(FunctionalGenes_withfdr)
+}
+
+
+```
+
+## CNAmet
+
+Install CNAmet from: https://csbi.ltdk.helsinki.fi/CNAmet/
+
+```{r}
+BiocManager::install("CNAmet")
+library(CNAmet)
+library(tictoc)
+
+data_name <- 'PAAD'
+data_folder <- '.'
+# load data
+load(file.path(data_folder, paste0(data_name, "_RawDataset.Rdata")))
+
+### reading copy number values and creating two binary matrices for amplification and deletion calls
+cn.amp <- data_merged.cnv
+cn.amp[cn.amp > 1] <- 1
+cn.amp[cn.amp < 0] <- 0
+
+cn.del <- data_merged.cnv
+cn.del[cn.del > 0] <- 0
+cn.del[cn.del < 0] <- 1
+cn.del[1:5,1:5]
+
+cn.amp <- as.matrix(cn.amp, rownames.force = T)
+cn.del <- as.matrix(cn.del, rownames.force = T)
+ge.exp <- as.matrix(data_merged.ge, rownames.force = T)
+me.m <- as.matrix(data_merged.me, rownames.force = T) # Convert to M values as recomended by their how to: https://csbi.ltdk.helsinki.fi/CNAmet/howto.html
+me.m <- log2(me.m/(1 - me.m)) # Formula for converting Beta values to M values.
+
+# running CNAmet
+tic("Total")
+
+tic("Amplification")
+amp_results <- CNAmet(exprMatrix = ge.exp, cghMatrix = cn.amp, methylMatrix = me.m, perms = 1000, na.limit = 0.1, gainData = TRUE,
+                     favorSynergetic = TRUE, strictChecks = FALSE, strictLim = 0.05)
+toc()
+
+tic("Deletion")
+del_results <- CNAmet(exprMatrix = ge.exp, cghMatrix = cn.del, methylMatrix = me.m, perms = 1000, na.limit = 0.1, gainData = FALSE,
+                     favorSynergetic = TRUE, strictChecks = FALSE, strictLim = 0.05)
+toc()
+toc()
+# Amplification: 2454.671 sec elapsed
+# Deletion: 2195.002 sec elapsed
+# Total: 4649.674 sec elapsed
+
+amp_results <- data.frame(amp_results)
+del_results <- data.frame(del_results)
+amp_results$Gene <- rownames(amp_results)
+del_results$Gene <- rownames(del_results)
+
+# saving results
+write.table(amp_results, file = paste0("CNAmet_", data_name, "_GainDriven.tsv"), row.names = F, sep = "\t", quote = F)
+write.table(del_results, file = paste0("CNAmet_", data_name, "_LossDriven_Genes.tsv"), row.names = F, sep = "\t", quote = F)
+
+```
+
+
+## MethylMix
+
+```{r}
+library(MethylMix)
+library(doParallel)
+library(tictoc)
+
+# load data
+gene_exp <- as.matrix(data_merged.ge, rownames.force = T)
+meth_beta <- as.matrix(data_merged.me, rownames.force = T)
+samples <- data_merged.samples
+cancer_samples <- samples[]
+
+# Need to get just the cancer samples for the gene expression 
+gene_exp_cancer <- gene_exp[, grepl("Tumor", colnames(gene_exp))]
+meth_beta_cancer <- gene_exp[, grepl("Tumor", colnames(meth_beta))]
+meth_beta_normal <- gene_exp[, grepl("Normal", colnames(meth_beta))]
+
+# running methylmix in parallel
+cl <- makeCluster(5)
+registerDoParallel(cl)
+tic("MethylMix")
+methyl_mix_genes <- MethylMix(meth_beta_cancer, gene_exp_cancer, meth_beta_normal)
+toc()
+stopCluster(cl)
+
+genes <- as.character(methyl_mix_genes)
+
+# saving results
+write.table(genes, "MethylMix_SKCM_3000Genes.txt", quote = F, row.names = F)
+
+```
+
+## EpiMethEx
+https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-018-2397-6
+https://github.com/giupardeb/EpiMethEx
+
+```{r}
+BiocManager::install("EpiMethEx")
+library(EpiMethEx)
+
+gene_exp <- as.matrix(data_merged.ge, rownames.force = T)
+meth_beta <- as.matrix(data_merged.me, rownames.force = T)
+meth_annotations <- read.csv('illuminaMethyl450_hg38_GDC_2500_promoter_mapping.csv')
+epimethex.analysis(Expressions, Annotations, Methylation, 1, 3, 2,TRUE, TRUE, FALSE)
+
+```
+
+## MEAL
+https://bioconductor.org/packages/3.13/bioc/html/MEAL.html
+https://www.bioconductor.org/packages/release/bioc/vignettes/MEAL/inst/doc/caseExample.html#4_Methylation_and_gene_expression_integration
+```{r}
+BiocManager::install("MEAL")
+library("MEAL")
+
+multi <- createMultiDataSet()
+multi <- add_genexp(multi, brge_gexp)
+multi <- add_methy(multi, brge_methy)
+methExprs <- correlationMethExprs(multi)
+head(methExprs)
+
+```
+
+## BioMethyl
+
+https://academic.oup.com/bioinformatics/article/35/19/3635/5364266
+https://github.com/yuewangpanda/BioMethyl
+
+```{r}
+
+install.packages("package_path/BioMethyl_1.1.tar.gz", repos = NULL)
+library("BioMethyl")
+
+dat <- filterMethyData(MethData)
+myExpr <- calExpr(dat, "BRCA", Example = T, SaveOut = F, "")
+samp_1 <- colnames(myExpr)[1:10]
+samp_2 <- colnames(myExpr)[11:20]
+mydf <- calDEG(myExpr, Sample_1 = samp_1, Sample_2 = samp_2, SaveOut = F, "")
+
+```
+## SIRCLE
+
+```{r}
+
+```
