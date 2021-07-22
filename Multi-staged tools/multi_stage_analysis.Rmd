@@ -368,35 +368,38 @@ toc()
 ```{r}
 library(MethylMix)
 library(tictoc)
-
-data_name <- 'PAAD'
-data_folder <- '.'
-# load data
-load(file.path(data_folder, paste0(data_name, "_RawDataset.Rdata")))
-
-
-# load data
-gene_exp <- as.matrix(data_merged.ge, rownames.force = T)
-meth_beta <- as.matrix(data_merged.me, rownames.force = T)
-samples <- data_merged.samples
-
-# Need to get just the cancer samples for the gene expression 
-gene_exp_cancer <- gene_exp[, grepl("Tumor", colnames(gene_exp))]
-meth_beta_cancer <- meth_beta[, grepl("Tumor", colnames(meth_beta))]
-meth_beta_normal <- meth_beta[, grepl("Normal", colnames(meth_beta))]
-
-# running methylmix in parallel
-tic("MethylMix")
-methyl_mix_genes <- MethylMix(meth_beta_cancer, gene_exp_cancer, meth_beta_normal)
-toc()
-# Non paralell run: 29/06/2021
-# MethylMix: 975.421 sec elapsed
-
-genes <- as.character(methyl_mix_genes)
-driver_genes <- methyl_mix_genes$MethylationDrivers
-
-# saving results
-write.table(driver_genes, paste0("MethylMix_", data_name, "_driver_genes.txt"), quote = F, row.names = F)
+# 'PAAD', 'KIRC', 'KIRP', 'COAD',
+data_names <- c( 'SKCM')
+for (data_name in data_names) {
+  print(data_name)
+  data_folder <- '.'
+  # load data
+  load(file.path(data_folder, paste0(data_name, "_RawDataset.Rdata")))
+  
+  
+  # load data
+  gene_exp <- as.matrix(data_merged.ge, rownames.force = T)
+  meth_beta <- as.matrix(data_merged.me, rownames.force = T)
+  samples <- data_merged.samples
+  
+  # Need to get just the cancer samples for the gene expression 
+  gene_exp_cancer <- gene_exp[, grepl("Tumor", colnames(gene_exp))]
+  meth_beta_cancer <- meth_beta[, grepl("Tumor", colnames(meth_beta))]
+  meth_beta_normal <- meth_beta[, grepl("Normal", colnames(meth_beta))]
+  
+  # running methylmix in parallel
+  tic("MethylMix")
+  methyl_mix_genes <- MethylMix(meth_beta_cancer, gene_exp_cancer, meth_beta_normal)
+  toc()
+  # Non paralell run: 29/06/2021
+  # MethylMix: 975.421 sec elapsed
+  
+  genes <- as.character(methyl_mix_genes)
+  driver_genes <- methyl_mix_genes$MethylationDrivers
+  
+  # saving results
+  write.table(driver_genes, paste0("MethylMix_", data_name, "_driver_genes.txt"), quote = F, row.names = F)
+}
 
 ```
 
