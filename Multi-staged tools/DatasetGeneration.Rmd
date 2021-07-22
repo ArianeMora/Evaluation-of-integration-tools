@@ -101,263 +101,135 @@ cpg_annotation <- cpg_annotation[!duplicated(cpg_annotation$id),] # Remove any d
 rownames(cpg_annotation) <- cpg_annotation$id
 
 make_datasets <- function(data_name, data_folder) {
-      message("Making datasets for CNV, RNAseq, and DNA methylation of ", data_name, " in folder: ", data_folder)
-      ### reading copy number values and seperating them into amplification and deletion calls
-      phenotype <- read.csv(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".GDC_phenotype.tsv.gz"))),  header = T, sep = "\t")
-      # Print out the number of normal and tumour samples
-      print.data.frame(as.data.frame(table(phenotype$sample_type.samples)))
-      # Replace the '-' with '.' since this is what R will do anyway
-      phenotype$submitter_id_safe <- gsub("-", ".",  phenotype$submitter_id.samples, fixed = TRUE)
-      
-      # Create a column that has the sample type and sample name merged
-      phenotype$sample_id <- paste(gsub(" ", "", phenotype$sample_type.samples, fixed = TRUE), phenotype$submitter_id_safe, sep="_")
-      
-      
-      if (data_name == 'SKCM') {
-        # Then we want to only keep primary tumour and metastatic
-        cond1 <- phenotype[phenotype$sample_type.samples == 'Metastatic', ] 
-        cond2 <- phenotype[phenotype$sample_type.samples == 'Primary Tumor', ]
-      } else {
-      # We only want to keep normal and primary tumour
-        cond1 <- phenotype[phenotype$sample_type.samples == 'Primary Tumor', ] 
-        cond2 <- phenotype[phenotype$sample_type.samples == 'Solid Tissue Normal', ]
-      }
-      cond1$condition_id <- 1
-      cond2$condition_id <- 0
-      # Combine the two dataframes
-      samples <- rbind(as.data.frame(cond1), as.data.frame(cond2))
-      rownames(samples) <- samples$submitter_id_safe
-      # Now we have a sample dataframe that is ordered by condition 1 followed by condition 2
-      # We also have a column name that has informative information regarding the tumour type.
-      # We'll use this new column to rename the other datasets so we can keep track of our samples more easily.
-      
-      ### reading copy number values and seperating them into amplification and deletion calls
-      cn <- read.table(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".gistic.tsv.gz"))), header = T, sep = "\t")
-      cn[1:5,1:5]
-      rownames(cn) <- cn[,1]
-      cn <- cn[,-1]
-      
-      ### reading gene expression file
-      ge.exp <- read.table(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".htseq_counts.tsv.gz"))), header = T, sep = "\t")
-      ge.exp[1:5,1:5]
-      rownames(ge.exp) <- ge.exp[,1]
-      # Set Ensembl ID to be the main ID
-      ge.exp <- ge.exp[,2:length(colnames(ge.exp))]
-      # Remove the normalisation by log2 + 1
-      ge.exp <- (2^ge.exp) - 1 
-      
-      ## reading methylation data
-      me.exp <- read.table(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".methylation450.tsv.gz"))), header = T, sep = "\t")
-      me.exp[1:5,1:5]
-      me.exp <- me.exp[-1,]
-      rownames(me.exp) <- me.exp[,1]
-      me.exp <- me.exp[,-1]
-      me.exp <- na.omit(me.exp)
-      
-      # map between the two CPG annotation and the CPGs to get the gene IDs
-      annotated_cpgs <- intersect(rownames(me.exp), cpg_annotation$id)
-      me.exp_annot <- me.exp[annotated_cpgs,]
-      mapping <- cpg_annotation[annotated_cpgs,]
-      me.exp_annot$var <- rowVars(as.matrix(me.exp_annot))
-      me.exp_annot$id <- mapping$ensembl_gene_id
-      
-      # Here we need to pick the CpG mapped to the gene with the highest variability
-      me.exp_annot <- me.exp_annot[order(me.exp_annot$id, -abs(me.exp_annot$var) ), ]
-      me.exp_annot <- me.exp_annot[ !duplicated(me.exp_annot$id), ]
-      
-      # Now finally consolidate this 
-      me.exp <- me.exp[rownames(me.exp_annot),]
-      mapping <- mapping[rownames(me.exp_annot), ]
-      
-      # change to having ensembl IDs instead of CpGs
-      rownames(me.exp_annot) <- mapping$ensembl_gene_id
-      rownames(mapping) <- mapping$ensembl_gene_id
-
-      # Now we just want to get the intersect of the rownames, first we merge this 
-      ## identifying common genes and samples in all the datasets
-      # We also want to make sure we have the phenotype
-      # reorder the columns to just be those in our phenotype
-      cols <- intersect(samples$submitter_id_safe, colnames(cn))
-      a <- intersect(cols, colnames(ge.exp))
-      a1 <- intersect(colnames(me.exp), a)
-      
-      # Remove the ensembl ID version from the rownames
-      ens_id_sep <- data.frame(do.call('rbind', strsplit(as.character(rownames(ge.exp)),'.',fixed=TRUE)))
-      rownames(ge.exp) <- ens_id_sep$X1
-      
-      ens_id_sep <- data.frame(do.call('rbind', strsplit(as.character(rownames(cn)),'.',fixed=TRUE)))
-      rownames(cn) <- ens_id_sep$X1
-      b <- intersect(rownames(cn), rownames(ge.exp))
-      b1 <- intersect(rownames(me.exp), b)
-      
-      samples_ge <- intersect(samples$submitter_id_safe, colnames(ge.exp))
-      ge.exp2 <- ge.exp[b1, samples_ge]
-      message("Gene expression samples:")
-      print.data.frame(as.data.frame(table(samples[samples_ge, ]$sample_type.samples)))
-      
-      samples_cn <- intersect(samples$submitter_id_safe, colnames(cn))
-      cn2 <- cn[b1, samples_cn]
-      message("Copy number variation samples:")
-      print.data.frame(as.data.frame(table(samples[samples_cn, ]$sample_type.samples)))
-      
-      samples_me <- intersect(samples$submitter_id_safe, colnames(me.exp))
-      me.exp2 <- me.exp[b1, samples_me]
-      message("DNA Methylation samples:")
-      print.data.frame(as.data.frame(table(samples[samples_me, ]$sample_type.samples)))
-      
-      # Rename each of them to have more informative column names based on the sample name and sample type
-      colnames(ge.exp2) <- samples[samples_ge, ]$sample_id
-      colnames(cn2) <- samples[samples_cn, ]$sample_id
-      colnames(me.exp2) <- samples[samples_me, ]$sample_id
-      
-      ## removing genes with zero and near zero variance in gene expression dataset and creating final dataset
-      # ge <-  Gene expression dataframe
-      # cnv <- copy number variation dataframe
-      # me <- methylation intensity dataframe
-      exp_var <- rowVars(as.matrix(log2(ge.exp2 + 1)))
-      data_merged.ge <- ge.exp2[exp_var > 0.25, ]
-      data_merged.ge <- data.frame(data_merged.ge)
-      
-      data_merged.cnv <- cn2[rownames(data_merged.ge), ]
-      data_merged.me <- me.exp2[rownames(data_merged.ge), ]
-      data_merged.samples <- samples
-      
-      message("Saving merged datasets to:", file.path(data_folder, paste0(data_name, "_RawDataset.Rdata")))
-      save(file = file.path(data_folder, paste0(data_name, "_RawDataset.Rdata")), data_merged.ge, data_merged.cnv, data_merged.me, data_merged.samples)
+    message("Making datasets for CNV, RNAseq, and DNA methylation of ", data_name, " in folder: ", data_folder)
+    ### reading copy number values and seperating them into amplification and deletion calls
+    phenotype <- read.csv(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".GDC_phenotype.tsv.gz"))),  header = T, sep = "\t")
+    # Print out the number of normal and tumour samples
+    print.data.frame(as.data.frame(table(phenotype$sample_type.samples)))
+    # Replace the '-' with '.' since this is what R will do anyway
+    phenotype$submitter_id_safe <- gsub("-", ".",  phenotype$submitter_id.samples, fixed = TRUE)
+    
+    # Create a column that has the sample type and sample name merged
+    phenotype$sample_id <- paste(gsub(" ", "", phenotype$sample_type.samples, fixed = TRUE), phenotype$submitter_id_safe, sep="_")
+    
+    
+    if (data_name == 'SKCM') {
+      # Then we want to only keep primary tumour and metastatic
+      cond1 <- phenotype[phenotype$sample_type.samples == 'Metastatic', ] 
+      cond2 <- phenotype[phenotype$sample_type.samples == 'Primary Tumor', ]
+    } else {
+    # We only want to keep normal and primary tumour
+      cond1 <- phenotype[phenotype$sample_type.samples == 'Primary Tumor', ] 
+      cond2 <- phenotype[phenotype$sample_type.samples == 'Solid Tissue Normal', ]
+    }
+    cond1$condition_id <- 1
+    cond2$condition_id <- 0
+    # Combine the two dataframes
+    samples <- rbind(as.data.frame(cond1), as.data.frame(cond2))
+    rownames(samples) <- samples$submitter_id_safe
+    # Now we have a sample dataframe that is ordered by condition 1 followed by condition 2
+    # We also have a column name that has informative information regarding the tumour type.
+    # We'll use this new column to rename the other datasets so we can keep track of our samples more easily.
+    
+    ### reading copy number values and seperating them into amplification and deletion calls
+    cn <- read.table(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".gistic.tsv.gz"))), header = T, sep = "\t")
+    cn[1:5,1:5]
+    rownames(cn) <- cn[,1]
+    cn <- cn[,-1]
+    
+    ### reading gene expression file
+    ge.exp <- read.table(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".htseq_counts.tsv.gz"))), header = T, sep = "\t")
+    ge.exp[1:5,1:5]
+    rownames(ge.exp) <- ge.exp[,1]
+    # Set Ensembl ID to be the main ID
+    ge.exp <- ge.exp[,2:length(colnames(ge.exp))]
+    # Remove the normalisation by log2 + 1
+    ge.exp <- (2^ge.exp) - 1 
+    
+    ## reading methylation data
+    me.exp <- read.table(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".methylation450.tsv.gz"))), header = T, sep = "\t")
+    me.exp[1:5,1:5]
+    me.exp <- me.exp[-1,]
+    rownames(me.exp) <- me.exp[,1]
+    me.exp <- me.exp[,-1]
+    # Replace NA with 0 R
+    me.exp[is.na(me.exp)] <- 0
+    
+    # map between the two CPG annotation and the CPGs to get the gene IDs
+    annotated_cpgs <- intersect(rownames(me.exp), cpg_annotation$id)
+    me.exp_annot <- me.exp[annotated_cpgs,]
+    mapping <- cpg_annotation[annotated_cpgs,]
+    me.exp_annot$var <- rowVars(as.matrix(me.exp_annot))
+    me.exp_annot$id <- mapping$ensembl_gene_id
+    
+    # Here we need to pick the CpG mapped to the gene with the highest variability
+    me.exp_annot <- me.exp_annot[order(me.exp_annot$id, -abs(me.exp_annot$var) ), ]
+    me.exp_annot <- me.exp_annot[ !duplicated(me.exp_annot$id), ]
+    
+    # Now finally consolidate this 
+    me.exp <- me.exp[rownames(me.exp_annot),]
+    mapping <- mapping[rownames(me.exp_annot), ]
+    
+    # change to having ensembl IDs instead of CpGs
+    rownames(me.exp) <- mapping$ensembl_gene_id
+    rownames(mapping) <- mapping$ensembl_gene_id
+    
+    # Now we just want to get the intersect of the rownames, first we merge this 
+    ## identifying common genes and samples in all the datasets
+    # We also want to make sure we have the phenotype
+    # reorder the columns to just be those in our phenotype
+    cols <- intersect(samples$submitter_id_safe, colnames(cn))
+    a <- intersect(cols, colnames(ge.exp))
+    a1 <- intersect(colnames(me.exp), a)
+    
+    # Remove the ensembl ID version from the rownames
+    ens_id_sep <- data.frame(do.call('rbind', strsplit(as.character(rownames(ge.exp)),'.',fixed=TRUE)))
+    rownames(ge.exp) <- ens_id_sep$X1
+    
+    ens_id_sep <- data.frame(do.call('rbind', strsplit(as.character(rownames(cn)),'.',fixed=TRUE)))
+    rownames(cn) <- ens_id_sep$X1
+    b <- intersect(rownames(cn), rownames(ge.exp))
+    b1 <- intersect(rownames(me.exp), b)
+    
+    samples_ge <- intersect(samples$submitter_id_safe, colnames(ge.exp))
+    ge.exp2 <- ge.exp[b1, samples_ge]
+    message("Gene expression samples:")
+    print.data.frame(as.data.frame(table(samples[samples_ge, ]$sample_type.samples)))
+    
+    samples_cn <- intersect(samples$submitter_id_safe, colnames(cn))
+    cn2 <- cn[b1, samples_cn]
+    message("Copy number variation samples:")
+    print.data.frame(as.data.frame(table(samples[samples_cn, ]$sample_type.samples)))
+    
+    samples_me <- intersect(samples$submitter_id_safe, colnames(me.exp))
+    me.exp2 <- me.exp[b1, samples_me]
+    me.annot <- mapping[b1, ]
+    
+    message("DNA Methylation samples:")
+    print.data.frame(as.data.frame(table(samples[samples_me, ]$sample_type.samples)))
+    
+    # Rename each of them to have more informative column names based on the sample name and sample type
+    colnames(ge.exp2) <- samples[samples_ge, ]$sample_id
+    colnames(cn2) <- samples[samples_cn, ]$sample_id
+    colnames(me.exp2) <- samples[samples_me, ]$sample_id
+    
+    ## removing genes with zero and near zero variance in gene expression dataset and creating final dataset
+    # ge <-  Gene expression dataframe
+    # cnv <- copy number variation dataframe
+    # me <- methylation intensity dataframe
+    exp_var <- rowVars(as.matrix(log2(ge.exp2 + 1)))
+    data_merged.ge <- ge.exp2[exp_var > 0.25, ]
+    data_merged.ge <- data.frame(data_merged.ge)
+    
+    data_merged.cnv <- cn2[rownames(data_merged.ge), ]
+    data_merged.me <- me.exp2[rownames(data_merged.ge), ]
+    data_merged.me_annot <- me.annot[rownames(data_merged.ge), ]
+    data_merged.samples <- samples
+    
+    message("Saving merged datasets to:", file.path(data_folder, paste0(data_name, "_RawDataset.Rdata")))
+    save(file = file.path(data_folder, paste0(data_name, "_RawDataset.Rdata")), data_merged.ge, data_merged.cnv, data_merged.me,
+         data_merged.samples, data_merged.me_annot)
 }
-
-
-
-data_name <- 'PAAD'
-data_folder <- '.'
-
-message("Making datasets for CNV, RNAseq, and DNA methylation of ", data_name, " in folder: ", data_folder)
-### reading copy number values and seperating them into amplification and deletion calls
-phenotype <- read.csv(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".GDC_phenotype.tsv.gz"))),  header = T, sep = "\t")
-# Print out the number of normal and tumour samples
-print.data.frame(as.data.frame(table(phenotype$sample_type.samples)))
-# Replace the '-' with '.' since this is what R will do anyway
-phenotype$submitter_id_safe <- gsub("-", ".",  phenotype$submitter_id.samples, fixed = TRUE)
-
-# Create a column that has the sample type and sample name merged
-phenotype$sample_id <- paste(gsub(" ", "", phenotype$sample_type.samples, fixed = TRUE), phenotype$submitter_id_safe, sep="_")
-
-
-if (data_name == 'SKCM') {
-  # Then we want to only keep primary tumour and metastatic
-  cond1 <- phenotype[phenotype$sample_type.samples == 'Metastatic', ] 
-  cond2 <- phenotype[phenotype$sample_type.samples == 'Primary Tumor', ]
-} else {
-# We only want to keep normal and primary tumour
-  cond1 <- phenotype[phenotype$sample_type.samples == 'Primary Tumor', ] 
-  cond2 <- phenotype[phenotype$sample_type.samples == 'Solid Tissue Normal', ]
-}
-cond1$condition_id <- 1
-cond2$condition_id <- 0
-# Combine the two dataframes
-samples <- rbind(as.data.frame(cond1), as.data.frame(cond2))
-rownames(samples) <- samples$submitter_id_safe
-# Now we have a sample dataframe that is ordered by condition 1 followed by condition 2
-# We also have a column name that has informative information regarding the tumour type.
-# We'll use this new column to rename the other datasets so we can keep track of our samples more easily.
-
-### reading copy number values and seperating them into amplification and deletion calls
-cn <- read.table(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".gistic.tsv.gz"))), header = T, sep = "\t")
-cn[1:5,1:5]
-rownames(cn) <- cn[,1]
-cn <- cn[,-1]
-
-### reading gene expression file
-ge.exp <- read.table(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".htseq_counts.tsv.gz"))), header = T, sep = "\t")
-ge.exp[1:5,1:5]
-rownames(ge.exp) <- ge.exp[,1]
-# Set Ensembl ID to be the main ID
-ge.exp <- ge.exp[,2:length(colnames(ge.exp))]
-# Remove the normalisation by log2 + 1
-ge.exp <- (2^ge.exp) - 1 
-
-## reading methylation data
-me.exp <- read.table(gzfile(file.path(data_folder, paste0("TCGA-", data_name, ".methylation450.tsv.gz"))), header = T, sep = "\t")
-me.exp[1:5,1:5]
-me.exp <- me.exp[-1,]
-rownames(me.exp) <- me.exp[,1]
-me.exp <- me.exp[,-1]
-me.exp <- na.omit(me.exp)
-
-# map between the two CPG annotation and the CPGs to get the gene IDs
-annotated_cpgs <- intersect(rownames(me.exp), cpg_annotation$id)
-me.exp_annot <- me.exp[annotated_cpgs,]
-mapping <- cpg_annotation[annotated_cpgs,]
-me.exp_annot$var <- rowVars(as.matrix(me.exp_annot))
-me.exp_annot$id <- mapping$ensembl_gene_id
-
-# Here we need to pick the CpG mapped to the gene with the highest variability
-me.exp_annot <- me.exp_annot[order(me.exp_annot$id, -abs(me.exp_annot$var) ), ]
-me.exp_annot <- me.exp_annot[ !duplicated(me.exp_annot$id), ]
-
-# Now finally consolidate this 
-me.exp <- me.exp[rownames(me.exp_annot),]
-mapping <- mapping[rownames(me.exp_annot), ]
-
-# change to having ensembl IDs instead of CpGs
-rownames(me.exp_annot) <- mapping$ensembl_gene_id
-rownames(mapping) <- mapping$ensembl_gene_id
-
-# Now we just want to get the intersect of the rownames, first we merge this 
-## identifying common genes and samples in all the datasets
-# We also want to make sure we have the phenotype
-# reorder the columns to just be those in our phenotype
-cols <- intersect(samples$submitter_id_safe, colnames(cn))
-a <- intersect(cols, colnames(ge.exp))
-a1 <- intersect(colnames(me.exp), a)
-
-# Remove the ensembl ID version from the rownames
-ens_id_sep <- data.frame(do.call('rbind', strsplit(as.character(rownames(ge.exp)),'.',fixed=TRUE)))
-rownames(ge.exp) <- ens_id_sep$X1
-
-ens_id_sep <- data.frame(do.call('rbind', strsplit(as.character(rownames(cn)),'.',fixed=TRUE)))
-rownames(cn) <- ens_id_sep$X1
-b <- intersect(rownames(cn), rownames(ge.exp))
-b1 <- intersect(rownames(me.exp), b)
-
-samples_ge <- intersect(samples$submitter_id_safe, colnames(ge.exp))
-ge.exp2 <- ge.exp[b1, samples_ge]
-message("Gene expression samples:")
-print.data.frame(as.data.frame(table(samples[samples_ge, ]$sample_type.samples)))
-
-samples_cn <- intersect(samples$submitter_id_safe, colnames(cn))
-cn2 <- cn[b1, samples_cn]
-message("Copy number variation samples:")
-print.data.frame(as.data.frame(table(samples[samples_cn, ]$sample_type.samples)))
-
-samples_me <- intersect(samples$submitter_id_safe, colnames(me.exp))
-me.exp2 <- me.exp[b1, samples_me]
-me.annot <- mapping[b1, ]
-
-message("DNA Methylation samples:")
-print.data.frame(as.data.frame(table(samples[samples_me, ]$sample_type.samples)))
-
-# Rename each of them to have more informative column names based on the sample name and sample type
-colnames(ge.exp2) <- samples[samples_ge, ]$sample_id
-colnames(cn2) <- samples[samples_cn, ]$sample_id
-colnames(me.exp2) <- samples[samples_me, ]$sample_id
-
-## removing genes with zero and near zero variance in gene expression dataset and creating final dataset
-# ge <-  Gene expression dataframe
-# cnv <- copy number variation dataframe
-# me <- methylation intensity dataframe
-exp_var <- rowVars(as.matrix(log2(ge.exp2 + 1)))
-data_merged.ge <- ge.exp2[exp_var > 0.25, ]
-data_merged.ge <- data.frame(data_merged.ge)
-
-data_merged.cnv <- cn2[rownames(data_merged.ge), ]
-data_merged.me <- me.exp2[rownames(data_merged.ge), ]
-data_merged.samples <- samples
-
-message("Saving merged datasets to:", file.path(data_folder, paste0(data_name, "_RawDataset.Rdata")))
-save(file = file.path(data_folder, paste0(data_name, "_RawDataset.Rdata")), data_merged.ge, data_merged.cnv, data_merged.me,
-     data_merged.samples, me.annot)
-
 
 ```
 ## Dataset generation

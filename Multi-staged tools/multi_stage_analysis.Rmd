@@ -121,6 +121,248 @@ write.table(del_results, file = paste0("CNAmet_", data_name, "_LossDriven_Genes.
 ```
 
 
+```{r}
+library(sircle)
+sircleRCM_noprotein <- function(rnaFile, methFile, geneId,
+                      rnaValueCol, rnaPadjCol, methValueCol, methPadjCol, 
+                      rnaPadjCutoff=0.05, rnaLogFCCutoff=0.5, 
+                      methPadjCutoff=0.05, methDiffCutoff=10, backgroundMethod="M|R", fileSep=",",
+                      nonCodingGeneList=NULL, outputFileName="SiRCle_RCM.csv", logfile="logfileRCM.csv",
+                      envName=NULL, condaEnvName=NULL, envPath=NULL) {
+  setupEnv = F
+  ## ------------ Setup and installs ----------- ##
+  packages <- c("tidyverse", "reticulate", "dplyr")
+  install.packages(setdiff(packages, rownames(installed.packages())))
+
+  library(tidyverse)
+  library(dplyr)
+  library(reticulate)
+
+  ## ------------ Setup the environment ----------- ##
+  if (! is.null(condaEnvName)) {
+    use_condaenv(condaEnvName, required = TRUE)
+    setupEnv = T
+  }
+  if (! is.null(envName)) {
+    use_virtualenv(envName, required = TRUE)
+    setupEnv = T
+  }
+  if (! is.null(envPath)) {
+    use_python(envPath, required = TRUE)
+    setupEnv = T
+  }
+  if (! setupEnv) {
+    print("WARNING: NEXT TIME USE envNAME --> we are creating you a new virtual environment called sircle. THIS TAKES TIME, so next time pass envName=sircle to skip this step. ")
+    print("WARNING: YOUR SYSTEM NEED PYTHON > 3.6. If it doesn't nothing will work, please update to python 3.6 or consider installing conda!")
+    virtualenv_create(
+      envname = "sircle",
+      python = NULL,
+      packages = "scircm",
+      system_site_packages = getOption("reticulate.virtualenv.system_site_packages",
+                                       default = FALSE)
+    )
+    use_python(envPath, required = TRUE)
+    setupEnv = T
+  }
+  scimotf <<- import("scimotf")  # Make global
+  scircm <<- import("scircm")    # Make global
+  scivae <<- import("scivae")    # Make global
+
+  ## ------------ Run the RCM ----------- ##
+  rcm <- scircm$SciRCMnp(methFile, rnaFile, 
+                       rnaValueCol, rnaPadjCol, methValueCol, methPadjCol,
+                       geneId, sep=fileSep,
+                       rna_padj_cutoff=rnaPadjCutoff,  meth_padj_cutoff=methPadjCutoff,
+                       rna_logfc_cutoff=rnaLogFCCutoff, meth_diff_cutoff=methDiffCutoff,
+                       non_coding_genes=nonCodingGeneList, bg_type=backgroundMethod, logfile=logfile
+  )
+
+  rcm$run()
+  df <- rcm$get_df()
+  # This changes it so we can use it in R again
+  rcm$save_df(outputFileName)
+
+  return(rcm)
+}
+```
+
+## SiRCle
+```{r}
+
+## DE analysis on the RNAseq data
+library(DESeq2)
+
+###################################################################
+#                                                                 #
+# Used DEseq2 to compute the DE genes, however, could use any     #
+#         DE method.                                              #
+#                                                                 #
+###################################################################
+
+
+sircleDE <- function(counts, samples, data_name, output_dir="") {
+  
+  experimental_design <- samples
+  # Let's make sure our count data is in matrix format and is only the numeric columns i.e. everything but the 
+  output_file <- paste0(output_dir, data_name, "_DEseq2.csv")
+  # We now set the row names to be the gene IDs
+  #rownames(count_matrix) <- rownames(data_merged.ge) 
+  # Make sure the samples are correctly ordered
+  submitter_samples <- strsplit(colnames(data_merged.ge), "_")
+  submitter_samples <- sapply(submitter_samples, "[[", 2)
+  # Now we want to use this to order the samples
+  experimental_design <- samples[submitter_samples, ]
+  # Separate out each of the sample names to be the different experiment conditions
+  condition_id <- as.factor(experimental_design$condition_id)
+  case_id <- as.factor(experimental_design$submitter_id_safe)
+  
+  sample_df <- data.frame(case_id = case_id, condition_id=condition_id)
+  
+  dds_mat <- DESeqDataSetFromMatrix(countData = round(counts),
+                                    colData = sample_df,
+                                    design = ~condition_id) # Have patient ID as a factor (i.e. a batch correction)
+  
+  dds <- estimateSizeFactors(dds_mat)
+  
+  num_samples_meeting_criteria <- 3  # be strict and enforce that at least half the samples need to meet the criteria (i.e. one full condition)
+  num_counts_in_gene <- 10  # They need at least 10 counts
+  
+  keep <- rowSums(counts(dds_mat) >= num_counts_in_gene) >= num_samples_meeting_criteria
+  dds <- dds_mat[keep,] # Only keep the rows with this criteria
+  # Now we want to also filter out our other info using the same filter
+  counts_filtered <- counts[keep,]
+  
+  # Let's print the number of rows
+  print(paste("Dataset dimensions: ", nrow(dds), ncol(dds)))
+  # Run DEseq2
+  dds <- DESeq(dds)
+  
+  # Build results table
+  res <- results(dds)
+  
+  rna_df <- DataFrame(gene_id=rownames(res))
+  rna_df$logFC_rna <- res$log2FoldChange
+  rna_df$stat_rna <- res$stat
+  rna_df$pvalue_rna <- res$pvalue
+  rna_df$padj_rna <- res$pvalue
+  rna_df$lfcSE_rna <- res$lfcSE
+  rna_df$baseMean_rna <- res$baseMean
+    
+  all_rna_df <- cbind(rna_df, counts_filtered)
+  write.csv(all_rna_df, file = output_file)
+}
+
+
+
+library(limma)
+library(edgeR)
+
+###################################################################
+#                                                                 #
+# Using limma to compute significant CpG's however could use any  #
+#         method.                                                 #
+#                                                                 #
+###################################################################
+sircleDMC <- function(cpg_raw, samples, data_name, output_dir="") {
+  #### Import data ####
+  output_file <- paste0(output_dir, data_name, "_CpG-limma.csv")
+
+  submitter_samples <- strsplit(colnames(cpg_raw), "_")
+  submitter_samples <- sapply(submitter_samples, "[[", 2)
+  # Now we want to use this to order the samples
+  experimental_design <- samples[submitter_samples, ]
+  
+  #### QC/Filtering
+  # First remove all NA values
+  cpg_raw[is.na(cpg_raw)] <- 0
+  summary(cpg_raw)
+  
+  # Convert data to a matrix & plot the means for the rows
+  cpg_data_m <- as.matrix(cpg_raw)
+  row_means_data <- rowMeans(cpg_data_m)
+  hist(row_means_data)
+  nrow(cpg_data_m)
+  
+  # Remove rows with a very small amount of overall DNA methylation
+  cpg_data_filtered <- cpg_data_m[row_means_data > 0.1, ]
+  cpg_raw_filtered <- cpg_raw[row_means_data > 0.1, ] # Make sure we apply the same filter to our CpG names etc
+  nrow(cpg_data_filtered)
+  row_means_data <- rowMeans(cpg_data_filtered)
+  hist(row_means_data)
+  
+  # Remove rows with overly high DNA methylation
+  cpg_data_filtered <- cpg_data_filtered[row_means_data < 0.9, ]
+  cpg_raw_filtered <- cpg_raw_filtered[row_means_data < 0.9, ] # Make sure we apply the same filter to our CpG names etc
+  
+  nrow(cpg_data_filtered)
+  
+  # The function model.matrix is used to generate the design matrix
+  cases <- as.factor(experimental_design$submitter_id_safe)
+  cond_id <- as.factor(experimental_design$condition_id)
+  design = model.matrix(~cond_id)
+
+  coef_id <- length(colnames(design))
+  fit <- lmFit(cpg_data_filtered, design)
+  fit2 <- eBayes(fit)
+  
+  # Don't sort it otherwise we won't be able to match the data
+  fit2_adj <- topTable(fit2, coef=coef_id, adjust="fdr", sort.by="none", number=1000000) 
+  
+  # Add in the statistics from the DA analysis
+  all_cpg_df <- DataFrame(gene_id=rownames(fit2_adj))
+  all_cpg_df$logFC_meth <- fit2_adj$logFC
+  all_cpg_df$stat_meth <- fit2_adj$t
+  all_cpg_df$pvalue_meth <- fit2_adj$P.Value
+  all_cpg_df$padj_meth <- fit2_adj$adj.P.Val
+  all_cpg_df$B_meth <- fit2_adj$B
+  
+  all_cpg_df <- cbind(all_cpg_df, cpg_data_filtered)
+  
+  write.csv(all_cpg_df, output_file)
+  return(all_cpg_df)
+}
+
+sircleDMC(data_merged.me, data_merged.samples, data_name, output_dir="")
+sircleDE(data_merged.ge, data_merged.samples, data_name, output_dir="")
+
+rna_logfc_cutoff <- 0.5
+protein_logfc_cutoff <- NA
+methylation_cutoff <- 0.1
+p_cutoffs <- 0.05
+
+geneId <- 'external_gene_name'
+output_file_dir = ""
+test_title <- data_name
+protFile <- NA
+methFile <- "PAAD_CpG-limma.csv"
+rnaFile <- "PAAD_DEseq2.csv"
+
+proteinCols <- NA
+
+sircleFileName <- paste0(output_file_dir, "RCM_MandR_", test_title, "-GENES.csv")
+
+#tic()
+# Run the sircle RCM this may take some time
+rcm_TVN <- sircleRCM_noprotein(rnaFile, methFile, "gene_id", 
+                             "logFC_rna", "padj_rna", 
+                             "logFC_meth", "padj_meth",
+                             condaEnvName="ml", 
+                             rnaPadjCutoff = p_cutoffs, 
+                             rnaLogFCCutoff = rna_logfc_cutoff,
+                             methPadjCutoff = p_cutoffs, 
+                             methDiffCutoff = methylation_cutoff, 
+                             backgroundMethod = 'M&R', 
+                             outputFileName = sircleFileName, 
+                             logfile="logfileRCM.csv")
+
+rcm_TVN$output_dir <- output_file_dir
+regLabels <- "RegulatoryLabels"
+sircle::sirclePlot(sircleFileName, regLabels)
+
+toc()
+
+```
+
 ## MethylMix
 
 ```{r}
@@ -151,9 +393,10 @@ toc()
 # MethylMix: 975.421 sec elapsed
 
 genes <- as.character(methyl_mix_genes)
+driver_genes <- methyl_mix_genes$MethylationDrivers
 
 # saving results
-write.table(genes, paste0("MethylMix_", data_name, "_3000Genes.txt"), quote = F, row.names = F)
+write.table(driver_genes, paste0("MethylMix_", data_name, "_driver_genes.txt"), quote = F, row.names = F)
 
 ```
 
@@ -246,6 +489,11 @@ https://www.bioconductor.org/packages/release/bioc/vignettes/MEAL/inst/doc/caseE
 library("MEAL")
 library("minfi")
 
+data_name <- 'PAAD'
+data_folder <- '.'
+# load data
+load(file.path(data_folder, paste0(data_name, "_RawDataset.Rdata")))
+
 multi <- createMultiDataSet()
 annotation <- read.csv('tcga_hsapiens_gene_ensembl-GRCh38.p13.csv')
 annotation <- annotation[!is.na(annotation$external_gene_name), ]
@@ -255,7 +503,7 @@ annotation <- annotation[!duplicated(annotation$ensembl_gene_id),]
 rownames(annotation) <- annotation$ensembl_gene_id
 gene_exp <- as.matrix(data_merged.ge, rownames.force = T)
 meth_beta <- as.matrix(data_merged.me, rownames.force = T)
-meth_annot <- AnnotatedDataFrame(me.annot)
+meth_annot <- AnnotatedDataFrame(data_merged.me_annot)
 rownames(meth_beta) <- meth_annot$id # Change to be CpG IDs for this one.
 
 # have to add "chromosome" and "start", "end" for the eset
@@ -281,12 +529,60 @@ gene_exp_eset <- ExpressionSet(assayData = gene_exp,
 
 multi <- add_genexp(multi, gene_exp_eset)
 # Do the same for the beta data
-gene_exp_pdata <- AnnotatedDataFrame[colnames(gene_exp), ]
-meth_grset <- makeGenomicRatioSetFromMatrix(meth_beta, rownames = rownames(meth_beta), pData = meth_pdata,
-                              array = "IlluminaHumanMethylation450k",
-                              mergeManifest = FALSE, what = c("Beta"))
+meth_pdata <- samples[colnames(meth_beta), ]
 
-multi <- add_methy(multi, meth_beta)
+.liftOver_Hg19toHg38 <- function(ILMN.GR, m = NULL, verbose = FALSE) {
+  ah <- .initiateAH()
+  if(is.null(ah)) stop("AnnotationHub is currently not accessible. Please try again later.")
+  ch <- suppressMessages(ah[[remp_options(".default.AH.hg19ToHg38.over.chain")]])
+  ILMN.GR <- rtracklayer::liftOver(ILMN.GR, ch)
+  ILMN.GR <- unlist(ILMN.GR)
+  return(ILMN.GR)
+}
+
+
+ILMN.GR <- minfi::getLocations(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+
+.initiateAH <- function()
+{
+  permission <- file.access(AnnotationHub::getAnnotationHubOption("CACHE"), 2)
+  
+  if (permission != 0) {
+      message(
+        AnnotationHub::getAnnotationHubOption("CACHE"),
+        " is not writable, using temporal directory ",
+        .forwardSlashPath(tempdir()), " instead."
+      )
+    AnnotationHub::setAnnotationHubOption("CACHE", file.path(tempdir(), ".AnnotationHub"))
+  }
+  ah <- tryCatch({
+    suppressMessages(AnnotationHub::AnnotationHub())
+    # stop("")
+  }, error = function(e) {
+    return(NULL)
+  })
+  return(ah)
+}
+
+library("AnnotationHub")
+
+.forwardSlashPath <- function(path) {
+  gsub("\\\\", "/", path)
+}
+
+
+library(REMP)
+ILMN.GR <- .liftOver_Hg19toHg38(ILMN.GR, 
+                                "Lifting over Illumina CpG probe location from hg19 to hg38...",
+                                verbose)
+      
+save(file = file.path(data_folder, paste0("IlluminaHumanMethylation450k_HG38_REMP")), ILMN.GR)
+meth_grset <- makeGenomicRatioSetFromMatrix(meth_beta, rownames = rownames(meth_beta), 
+                                            pData = meth_pdata, 
+                                            array = "IlluminaHumanMethylation450k", annotation=ILMN.GR,
+                                            mergeManifest = FALSE, what = c("Beta"))
+
+multi <- add_methy(multi, meth_grset)
 methExprs <- correlationMethExprs(multi)
 head(methExprs)
 
